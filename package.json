@@ -1,0 +1,47 @@
+{
+  "name": "bruk-cursor-termux",
+  "version": "1.0.0",
+  "description": "Cursor Agent CLI installer for a specific Termux (Android ARM64) setup: Bionic shims, tree-sitter stubs, launcher-only LD_LIBRARY_PATH",
+  "keywords": [
+    "cursor",
+    "cursor-agent",
+    "termux",
+    "android",
+    "arm64",
+    "bionic"
+  ],
+  "homepage": "https://github.com/brukberhane/cursor-termux#readme",
+  "bugs": {
+    "url": "https://github.com/brukberhane/cursor-termux/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/brukberhane/cursor-termux.git"
+  },
+  "license": "MIT",
+  "author": {
+    "name": "Bruk Berhane Asfaw",
+    "email": "brukbrhane@gmail.com",
+    "url": "https://github.com/brukberhane"
+  },
+  "bin": {
+    "bruk-cursor-termux": "bin/bruk-cursor-termux.js",
+    "bct": "bin/bruk-cursor-termux.js"
+  },
+  "files": [
+    "bin/",
+    "scripts/install.sh",
+    "lib/",
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+    "CHANGELOG.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "os": ["android", "linux"],
+  "scripts": {
+    "postinstall": "node bin/postinstall-hint.js"
+  }
+}

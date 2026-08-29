@@ -1,0 +1,16 @@
+bruk-cursor-termux
+==================
+
+This repository ships Termux / Bionic compatibility glue only
+(installer, launcher, Node preload, JS stubs).
+
+Cursor Agent is proprietary software owned by Anysphere / Cursor.
+This project downloads the official agent package from Cursor's servers
+at install time. It does not redistribute the agent binary or source.
+
+Not affiliated with Anysphere or Cursor.
+
+The approach follows the public cursor-termux installer
+(https://github.com/Afnanksalal/cursor-termux, MIT) and adds patches
+needed on this Termux install (tree-sitter stubs, no global
+LD_LIBRARY_PATH so Termux-X11 is unaffected).
