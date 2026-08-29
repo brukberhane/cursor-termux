@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.1
+
+- Skip `cp` when npm global preload is already `PRELOAD_SRC` (`bct --patch-only` no longer dies with "same file")
+
 ## 1.0.0
 
 - First public package (`bruk-cursor-termux` / `bct`)

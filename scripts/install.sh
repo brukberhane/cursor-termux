@@ -77,7 +77,7 @@ write_preload() {
   local dest="$1"
   mkdir -p "$(dirname "$dest")"
   [[ -f "$PRELOAD_SRC" ]] || die "Missing $PRELOAD_SRC"
-  cp -f "$PRELOAD_SRC" "$dest"
+  _cp_if_different "$PRELOAD_SRC" "$dest"
   node --check "$dest" || die "preload syntax check failed: $dest"
 }
 
@@ -121,13 +121,20 @@ console.log("tree-sitter stubs -> " + root);
 NODE
 }
 
+_cp_if_different() {
+  local src="$1" dest="$2" src_r dest_r
+  src_r="$(readlink -f "$src" 2>/dev/null || echo "$src")"
+  dest_r="$(readlink -f "$dest" 2>/dev/null || echo "$dest")"
+  [[ "$src_r" == "$dest_r" ]] && return 0
+  cp -f "$src" "$dest"
+}
+
 sync_npm_preload() {
   local npm_root preload
   npm_root="$(npm root -g 2>/dev/null || true)"
   preload="${npm_root}/bruk-cursor-termux/lib/termux-preload.js"
   if [[ -f "$preload" && -f "$PRELOAD_SRC" ]]; then
-    cp -f "$PRELOAD_SRC" "$preload"
-    ok "Synced npm bruk-cursor-termux preload"
+    _cp_if_different "$PRELOAD_SRC" "$preload"
   fi
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "bruk-cursor-termux",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Cursor Agent CLI installer for a specific Termux (Android ARM64) setup: Bionic shims, tree-sitter stubs, launcher-only LD_LIBRARY_PATH",
   "keywords": [
     "cursor",
