@@ -252,13 +252,9 @@ fix_tls_and_libs() {
   cat > "$stub_c" <<'C'
 void __termux_gnu_compat_stub(void) {}
 C
-  clang -shared -fPIC -Wl,-soname,libm.so.6 "$stub_c" -o "$PREFIX/lib/libm.so.6" 2>/dev/null || true
-  clang -shared -fPIC -Wl,-soname,libc.so.6 "$stub_c" -o "$PREFIX/lib/libc.so.6" 2>/dev/null || true
-  clang -shared -fPIC -Wl,-soname,libpthread.so.0 "$stub_c" -o "$PREFIX/lib/libpthread.so.0" 2>/dev/null || true
-  clang -shared -fPIC -Wl,-soname,libdl.so.2 "$stub_c" -o "$PREFIX/lib/libdl.so.2" 2>/dev/null || true
-  if [[ -e "$PREFIX/glibc/lib/libgcc_s.so.1" ]]; then
-    ln -sfn "$PREFIX/glibc/lib/libgcc_s.so.1" "$PREFIX/lib/libgcc_s.so.1"
-  fi
+  for lib in libm.so.6 libc.so.6 libpthread.so.0 libdl.so.2 libgcc_s.so.1; do
+    clang -shared -fPIC -Wl,-soname,"$lib" "$stub_c" -o "$PREFIX/lib/$lib" 2>/dev/null || true
+  done
   ok "Shims ready"
 }
 
@@ -292,6 +288,42 @@ rebuild_sqlite() {
       warn "sqlite3 rebuild failed; continuing"
     fi
   )
+}
+
+rebuild_native_addon() {
+  local pkg_name="$1"
+  local node_name="$2"
+  step "Rebuilding $pkg_name -> $node_name for Bionic..."
+  (
+    cd "$VERSION_DIR"
+    npm i "$pkg_name" --ignore-scripts --no-save >/dev/null 2>&1 || true
+    local pkg_dir="node_modules/$pkg_name"
+    [[ -d "$pkg_dir" ]] || { warn "$pkg_name source not found, skipping"; return 0; }
+    find "$pkg_dir" -type f \( -name '*.gyp' -o -name '*.gypi' \) -print0 2>/dev/null |       xargs -0 sed -i -E         -e 's/\bOS\s*==\s*"android"/OS=="never"/g'         -e 's/\btarget_os\s*==\s*"android"/target_os=="never"/g'         -e '/android_ndk_path/d'         -e '/ANDROID_/d' 2>/dev/null || true
+    local jobs
+    jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
+    npx node-gyp rebuild -C "$pkg_dir" -- -DOS=linux -Dtarget_os=linux -Dandroid_ndk_path=/nonexistent >/dev/null 2>&1 || true
+    local built="$pkg_dir/build/Release/$node_name"
+    if [[ -s "$built" ]]; then
+      if readelf -d "$built" 2>/dev/null | grep -q 'NEEDED.*libc\.so$'; then
+        cp -f "$built" "$VERSION_DIR/$node_name"
+        ok "$node_name rebuilt for Bionic"
+      else
+        warn "$node_name rebuilt but may still have glibc deps"
+        cp -f "$built" "$VERSION_DIR/$node_name" 2>/dev/null || true
+      fi
+    else
+      warn "$pkg_name rebuild failed; continuing"
+    fi
+  )
+}
+
+rebuild_native_addons() {
+  step "Rebuilding native addons for Bionic..."
+  rebuild_native_addon "node-pty" "pty.node"
+  rebuild_native_addon "better-sqlite3" "better_sqlite3.node"
+  rebuild_native_addon "sqlite3" "node_sqlite3.node"
+  ok "Native addon rebuild complete"
 }
 
 patch_merkle_stub() {
@@ -412,6 +444,8 @@ apply_patches() {
   fi
   VERSION_DIR="$vdir"
   step "Patching $VERSION_DIR"
+  fix_tls_and_libs
+  rebuild_native_addons
   write_preload "$PRELOAD_DST"
   write_tree_sitter_stubs "$VERSION_DIR"
   sync_npm_preload
@@ -438,6 +472,7 @@ main() {
   swap_binaries
   fix_tls_and_libs
   rebuild_sqlite
+  rebuild_native_addons
   patch_merkle_stub
   install_preload_and_launcher
   write_tree_sitter_stubs "$VERSION_DIR"
