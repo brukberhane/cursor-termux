@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.2
+
+- Patch agent persist/tmux root from hardcoded `/tmp` to `os.tmpdir()` (Termux `/tmp` is not writable; fixes `agent resume` EACCES)
+
 ## 1.0.1
 
 - Skip `cp` when npm global preload is already `PRELOAD_SRC` (`bct --patch-only` no longer dies with "same file")

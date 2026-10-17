@@ -339,6 +339,42 @@ NODE
   fi
 }
 
+# Persist/tmux state used hardcoded /tmp; Android /tmp is not writable for Termux.
+# Same one-liner upstream should use: os.tmpdir() (bundle: u().tmpdir()).
+patch_persist_tmpdir() {
+  step "Patching persist root /tmp -> os.tmpdir()..."
+  local index_js="$VERSION_DIR/index.js"
+  [[ -f "$index_js" ]] || die "index.js not found"
+  if node - "$index_js" <<'NODE'
+const fs = require("fs");
+const p = process.argv[2];
+let src = fs.readFileSync(p, "utf8");
+const from = 'f="cursor-agent",h="/tmp"';
+const to = 'f="cursor-agent",h=u().tmpdir()';
+if (src.includes(to)) {
+  console.log("persist tmpdir patch already present");
+  process.exit(0);
+}
+if (!src.includes(from)) {
+  console.error("persist /tmp pattern not found");
+  process.exit(2);
+}
+if (src.split(from).length !== 2) {
+  console.error("persist /tmp pattern not unique");
+  process.exit(2);
+}
+src = src.replace(from, to);
+fs.writeFileSync(p, src);
+console.log("Patched persist h=\"/tmp\" -> h=u().tmpdir()");
+NODE
+  then
+    node --check "$index_js" || die "Patched index.js failed syntax check"
+    ok "Persist tmpdir OK"
+  else
+    warn "Persist tmpdir patch skipped (pattern not found); agent resume may hit EACCES on /tmp"
+  fi
+}
+
 install_preload_and_launcher() {
   step "Installing preload + durable launcher..."
   mkdir -p "$BIN_DIR" "$HOME/tmp" "$INSTALL_ROOT"
@@ -414,6 +450,7 @@ apply_patches() {
   step "Patching $VERSION_DIR"
   write_preload "$PRELOAD_DST"
   write_tree_sitter_stubs "$VERSION_DIR"
+  patch_persist_tmpdir
   sync_npm_preload
   # Always refresh launcher + bashrc so LD_LIBRARY_PATH never leaks globally.
   install_preload_and_launcher
@@ -439,6 +476,7 @@ main() {
   fix_tls_and_libs
   rebuild_sqlite
   patch_merkle_stub
+  patch_persist_tmpdir
   install_preload_and_launcher
   write_tree_sitter_stubs "$VERSION_DIR"
   sync_npm_preload
