@@ -418,6 +418,104 @@ NODE
   fi
 }
 
+# Persist sessions mkdir `/tmp/cursor-agent-persist-<uid>` and set TMUX_TMPDIR to
+# the same constant. Termux cannot create /tmp (EACCES). Point that constant at
+# $PREFIX/tmp (Termux TMPDIR: .../files/usr/tmp). Short enough for the tmux
+# socket path (sun_path max 108).
+patch_persist_tmpdir() {
+  step "Pointing persistent-session state off /tmp..."
+  local index_js="$VERSION_DIR/index.js"
+  local dest="${PREFIX}/tmp"
+  [[ -f "$index_js" ]] || die "index.js not found"
+  mkdir -p "$dest"
+  local rc=0
+  node - "$index_js" "$dest" <<'NODE' || rc=$?
+const fs = require("fs");
+const { spawnSync } = require("child_process");
+const p = process.argv[2];
+const dest = process.argv[3];
+if (!dest || dest === "/tmp" || dest.startsWith("/tmp/")) {
+  console.error("refusing persist dir under /tmp: " + dest);
+  process.exit(1);
+}
+const src = fs.readFileSync(p, "utf8");
+const mi = src.indexOf("TMUX_TMPDIR=");
+if (mi < 0) {
+  console.error("TMUX_TMPDIR assignment not found");
+  process.exit(2);
+}
+const vm = src.slice(mi, mi + 64).match(/TMUX_TMPDIR=([A-Za-z_$][\w$]*)/);
+if (!vm) {
+  console.error("TMUX_TMPDIR is not a simple identifier");
+  process.exit(2);
+}
+const name = vm[1];
+const lit = JSON.stringify(dest);
+const windowStart = Math.max(0, mi - 80000);
+const region = src.slice(windowStart, mi);
+const anchor = 'h="cursor-agent",' + name + "=";
+let rel = region.lastIndexOf(anchor);
+let abs;
+let end;
+if (rel >= 0) {
+  abs = windowStart + rel + anchor.length;
+  if (src[abs] !== '"') {
+    console.error("persist tmp initializer is not a string");
+    process.exit(2);
+  }
+  end = abs + 1;
+  while (end < src.length) {
+    if (src[end] === "\\") {
+      end += 2;
+      continue;
+    }
+    if (src[end] === '"') break;
+    end++;
+  }
+  if (src[end] !== '"') {
+    console.error("unterminated persist tmp string");
+    process.exit(2);
+  }
+  const currentVal = JSON.parse(src.slice(abs, end + 1));
+  if (currentVal === dest) {
+    console.log("persist tmp already " + dest);
+    process.exit(0);
+  }
+} else {
+  const needle = name + '="/tmp"';
+  rel = region.lastIndexOf(needle);
+  if (rel < 0) {
+    console.error("Could not find persist tmp root before TMUX_TMPDIR");
+    process.exit(2);
+  }
+  const quoted = '"/tmp"';
+  abs = windowStart + rel + needle.length - quoted.length;
+  end = abs + quoted.length - 1;
+  if (src.slice(abs, end + 1) !== quoted) {
+    console.error("persist tmp root was not /tmp");
+    process.exit(2);
+  }
+}
+const next = src.slice(0, abs) + lit + src.slice(end + 1);
+fs.writeFileSync(p, next);
+const chk = spawnSync(process.execPath, ["--check", p], { encoding: "utf8" });
+if (chk.status !== 0) {
+  fs.writeFileSync(p, src);
+  process.stderr.write(chk.stderr || chk.stdout || "");
+  console.error("syntax check failed; restored index.js");
+  process.exit(1);
+}
+console.log("persist tmp -> " + dest);
+NODE
+  if [[ "$rc" -eq 0 ]]; then
+    ok "Persist state -> $dest"
+  elif [[ "$rc" -eq 2 ]]; then
+    warn "Persist /tmp patch skipped (pattern not found); sessions may still EACCES on /tmp"
+  else
+    die "Persist /tmp patch failed"
+  fi
+}
+
 install_preload_and_launcher() {
   step "Installing preload + durable launcher..."
   mkdir -p "$BIN_DIR" "$HOME/tmp" "$INSTALL_ROOT"
@@ -440,6 +538,12 @@ export NODE_PATH="\${VERSION_DIR}/node_modules\${NODE_PATH:+:\${NODE_PATH}}"
 # GNU-named stubs live under cursor-agent/lib, not \$PREFIX/lib (that path
 # is on the default Bionic search and would break Termux node/npm/pnpm).
 export LD_LIBRARY_PATH="\${HOME}/.local/share/cursor-agent/lib:\${PREFIX}/lib:\${LD_LIBRARY_PATH:-}"
+# /tmp is not writable here. Persist state is patched onto \$PREFIX/tmp.
+# TMPDIR covers os.tmpdir() (debug logs) when the parent left it unset or on /tmp.
+mkdir -p "\${PREFIX}/tmp"
+case "\${TMPDIR:-}" in
+  ""|/tmp|/tmp/) export TMPDIR="\${PREFIX}/tmp" ;;
+esac
 PRELOAD="\${HOME}/.local/share/cursor-agent/termux-preload.js"
 [[ -f "\${PRELOAD}" ]] || {
   echo "cursor-agent: missing termux-preload.js; re-run bruk-cursor-termux" >&2
@@ -496,6 +600,7 @@ apply_patches() {
   fix_tls_and_libs
   write_preload "$PRELOAD_DST"
   patch_merkle_stub
+  patch_persist_tmpdir
   write_tree_sitter_stubs "$VERSION_DIR"
   sync_npm_preload
   # Always refresh launcher + bashrc so LD_LIBRARY_PATH never leaks globally.

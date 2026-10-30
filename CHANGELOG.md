@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.3
+
+- Persistent sessions no longer `mkdir /tmp/cursor-agent-persist-<uid>` (Termux EACCES). That root and `TMUX_TMPDIR` now point at `$PREFIX/tmp` (`.../files/usr/tmp`)
+- Launcher sets `TMPDIR=$PREFIX/tmp` when it is unset or `/tmp`, so `os.tmpdir()` debug logs hit the same writable dir
+
 ## 1.0.2
 
 - Install/upgrade `libc++` with `nodejs-lts`. Node 24 against NDK r29 dies with `cannot locate symbol "_ZNSt6__ndk113__hash_memoryEPKvm"` and takes npm/pnpm with it

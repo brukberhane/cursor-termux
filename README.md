@@ -13,6 +13,7 @@ Inspired by [cursor-termux](https://github.com/Afnanksalal/cursor-termux) (MIT).
 | `node_sqlite3` glibc addon | Preload stubs `dlopen`; rebuild sqlite3 for Bionic when possible |
 | Merkle native `.node` crash | Patch failure path + `dlopen` stub |
 | Agent `2026.08.25+` `require("tree-sitter")` | JS Parser stubs (`tree-sitter`, `tree-sitter-bash`) |
+| Persist session `mkdir /tmp/cursor-agent-persist-<uid>` EACCES | Rewrite that root (and `TMUX_TMPDIR`) to `$PREFIX/tmp` |
 | Global `LD_LIBRARY_PATH` in `~/.bashrc` | **Not set.** Launcher-only so Termux-X11 is untouched |
 
 ## Install (fresh Termux)
@@ -74,9 +75,10 @@ bct --patch-only
 7. TLS certs + empty glibc-named `.so` stubs under `~/.local/share/cursor-agent/lib` (launcher `LD_LIBRARY_PATH` only; never `$PREFIX/lib`)  
 8. sqlite3 node-gyp rebuild (best-effort)  
 9. Merkle `index.js` patch  
-10. Copy `lib/termux-preload.js`, write `~/.local/bin/cursor-agent`, PATH-only bashrc block  
-11. Write tree-sitter JS stubs; preload recreates them on every launch  
-12. Smoke: `env -u LD_LIBRARY_PATH cursor-agent --help`
+10. Persist state root `/tmp` → `$PREFIX/tmp` (same constant is `TMUX_TMPDIR`)  
+11. Copy `lib/termux-preload.js`, write `~/.local/bin/cursor-agent`, PATH-only bashrc block  
+12. Write tree-sitter JS stubs; preload recreates them on every launch  
+13. Smoke: `env -u LD_LIBRARY_PATH cursor-agent --help`
 
 ## Layout
 
@@ -95,6 +97,7 @@ bct --patch-only
 | `LD_LIBRARY_PATH=$HOME/.local/share/cursor-agent/lib:$PREFIX/lib` | **launcher only** | GNU stubs + agent .so |
 | `CURSOR_AGENT_VERSION_DIR` | launcher | preload finds the tree |
 | `NODE_OPTIONS=--require=preload` | launcher | workers inherit shims |
+| `TMPDIR=$PREFIX/tmp` | launcher, only if unset or `/tmp` | `os.tmpdir()` debug logs; persist dir is patched to the same path |
 
 Do not export `LD_LIBRARY_PATH` from bashrc — it breaks Termux-X11.
 
