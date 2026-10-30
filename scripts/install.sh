@@ -41,6 +41,33 @@ ok() { printf '%sok%s %s\n' "$GREEN" "$NC" "$*"; }
 warn() { printf '%s!%s %s\n' "$YELLOW" "$NC" "$*"; }
 die() { printf '%serror%s %s\n' "$RED" "$NC" "$*" >&2; exit 1; }
 
+SHIM_DIR="${INSTALL_ROOT}/lib"
+
+node_version() {
+  node -e 'process.stdout.write(process.version)' 2>/dev/null || true
+}
+
+ensure_node_ok() {
+  local ver err
+  ver="$(node_version)"
+  if [[ "$ver" == v* ]]; then
+    return 0
+  fi
+  err="$(node -e 'process.stdout.write(process.version)' 2>&1 || true)"
+  warn "node not runnable: ${err:-missing}"
+  step "Upgrading libc++ (nodejs-lts 24 needs NDK r30; r29 missing __hash_memory)..."
+  mkdir -p "$PREFIX/etc/apt"
+  if [[ ! -s "$PREFIX/etc/apt/sources.list" ]]; then
+    printf 'deb https://packages.termux.dev/apt/termux-main stable main\n' > "$PREFIX/etc/apt/sources.list"
+  fi
+  pkg update -y
+  pkg install -y libc++ nodejs-lts
+  ver="$(node_version)"
+  [[ "$ver" == v* ]] || die "node still broken after libc++ upgrade. Run: pkg upgrade libc++ && pkg reinstall nodejs-lts
+Last error: ${err:-unknown}"
+  ok "node recovered ($ver)"
+}
+
 require_termux() {
   if [[ "${PREFIX}" != /data/data/com.termux/files/usr* ]] && [[ ! -d /data/data/com.termux/files/usr ]]; then
     die "Termux on Android only."
@@ -179,10 +206,15 @@ install_deps() {
     printf 'deb https://packages.termux.dev/apt/termux-main stable main\n' > "$PREFIX/etc/apt/sources.list"
   fi
   pkg update -y
+  # libc++ must track nodejs-lts. Apt does not always upgrade libc++ 29 -> 30
+  # when node is rebuilt against NDK r30, and node then dies with:
+  #   cannot locate symbol "_ZNSt6__ndk113__hash_memoryEPKvm"
+  pkg install -y libc++
   pkg install -y curl git nodejs-lts ripgrep python make clang pkg-config binutils openssl-tool tar which
   command -v node >/dev/null || die "node missing after pkg install"
   command -v rg >/dev/null || die "ripgrep missing after pkg install"
-  ok "Dependencies ready (node $(node -v))"
+  ensure_node_ok
+  ok "Dependencies ready (node $(node_version))"
 }
 
 detect_version() {
@@ -237,36 +269,62 @@ swap_binaries() {
   ok "node -> $(command -v node)"
 }
 
+_scrub_prefix_gnu_stubs() {
+  # Old installs dropped GNU-named stubs + glibc libgcc into $PREFIX/lib.
+  # Bionic searches that dir by default, so Termux node/npm/pnpm can pick them up.
+  local f p sz t
+  for f in libc.so.6 libm.so.6 libpthread.so.0 libdl.so.2; do
+    p="$PREFIX/lib/$f"
+    [[ -f "$p" && ! -L "$p" ]] || continue
+    sz="$(stat -c %s "$p" 2>/dev/null || echo 0)"
+    if [[ "$sz" -lt 20000 ]]; then
+      rm -f "$p"
+    fi
+  done
+  p="$PREFIX/lib/libgcc_s.so.1"
+  if [[ -L "$p" ]]; then
+    t="$(readlink -f "$p" 2>/dev/null || true)"
+    if [[ "$t" == *"/glibc/lib/"* ]]; then
+      rm -f "$p"
+    fi
+  fi
+}
+
 fix_tls_and_libs() {
   step "TLS + library shims..."
-  mkdir -p "$PREFIX/etc/tls/certs"
+  mkdir -p "$PREFIX/etc/tls/certs" "$SHIM_DIR"
   if [[ -f "$PREFIX/etc/tls/cert.pem" ]]; then
     ln -sfn "$PREFIX/etc/tls/cert.pem" "$PREFIX/etc/tls/certs/cert.pem"
   fi
+  _scrub_prefix_gnu_stubs
+  # Harmless Bionic alias. Android resolves .node DT_NEEDED via node's RUNPATH
+  # ($PREFIX/lib), not LD_LIBRARY_PATH — keep the name here AND in SHIM_DIR.
   if [[ -f "$PREFIX/lib/libc++_shared.so" ]]; then
     ln -sfn "$PREFIX/lib/libc++_shared.so" "$PREFIX/lib/libstdc++.so.6"
     ln -sfn "$PREFIX/lib/libc++_shared.so" "$PREFIX/lib/libstdc++.so"
+    ln -sfn "$PREFIX/lib/libc++_shared.so" "$SHIM_DIR/libstdc++.so.6"
+    ln -sfn "$PREFIX/lib/libc++_shared.so" "$SHIM_DIR/libstdc++.so"
   fi
   local stub_c="$HOME/.cache/cursor-termux/empty-gnu-compat.c"
   mkdir -p "$(dirname "$stub_c")"
   cat > "$stub_c" <<'C'
 void __termux_gnu_compat_stub(void) {}
 C
-  clang -shared -fPIC -Wl,-soname,libm.so.6 "$stub_c" -o "$PREFIX/lib/libm.so.6" 2>/dev/null || true
-  clang -shared -fPIC -Wl,-soname,libc.so.6 "$stub_c" -o "$PREFIX/lib/libc.so.6" 2>/dev/null || true
-  clang -shared -fPIC -Wl,-soname,libpthread.so.0 "$stub_c" -o "$PREFIX/lib/libpthread.so.0" 2>/dev/null || true
-  clang -shared -fPIC -Wl,-soname,libdl.so.2 "$stub_c" -o "$PREFIX/lib/libdl.so.2" 2>/dev/null || true
+  clang -shared -fPIC -Wl,-soname,libm.so.6 "$stub_c" -o "$SHIM_DIR/libm.so.6" 2>/dev/null || true
+  clang -shared -fPIC -Wl,-soname,libc.so.6 "$stub_c" -o "$SHIM_DIR/libc.so.6" 2>/dev/null || true
+  clang -shared -fPIC -Wl,-soname,libpthread.so.0 "$stub_c" -o "$SHIM_DIR/libpthread.so.0" 2>/dev/null || true
+  clang -shared -fPIC -Wl,-soname,libdl.so.2 "$stub_c" -o "$SHIM_DIR/libdl.so.2" 2>/dev/null || true
   if [[ -e "$PREFIX/glibc/lib/libgcc_s.so.1" ]]; then
-    ln -sfn "$PREFIX/glibc/lib/libgcc_s.so.1" "$PREFIX/lib/libgcc_s.so.1"
+    ln -sfn "$PREFIX/glibc/lib/libgcc_s.so.1" "$SHIM_DIR/libgcc_s.so.1"
   fi
-  ok "Shims ready"
+  ok "Shims ready ($SHIM_DIR)"
 }
 
 rebuild_sqlite() {
   step "Rebuilding sqlite3 for Bionic (best effort)..."
   (
     cd "$VERSION_DIR"
-    export LD_LIBRARY_PATH="$PREFIX/lib:${LD_LIBRARY_PATH:-}"
+    export LD_LIBRARY_PATH="${SHIM_DIR}:$PREFIX/lib:${LD_LIBRARY_PATH:-}"
     npm i sqlite3 --ignore-scripts >/dev/null 2>&1 || true
     if [[ ! -d node_modules/sqlite3 ]]; then
       warn "sqlite3 sources missing; skipping rebuild"
@@ -303,31 +361,52 @@ patch_merkle_stub() {
 const fs = require("fs");
 const p = process.argv[2];
 let src = fs.readFileSync(p, "utf8");
-if (src.includes("MerkleClient:class{constructor(){}}")) {
+if (/if\(!(\w)\)\{\1=\{MerkleClient:class/.test(src)) {
   console.log("Merkle stub already present");
   process.exit(0);
 }
 const stub =
-  '{MerkleClient:class{constructor(){}async build(){}async getTreeStructure(){return null}async getSimhash(){return[]}async getNumEmbeddableFiles(){return 0}},getParentProcessInfo:()=>null,MULTI_ROOT_ABSOLUTE_PATH:""}';
+  '{MerkleClient:class{constructor(){}async build(){}async getTreeStructure(){return null}async getSimhash(){return[]}async getNumEmbeddableFiles(){return 0}async initWithRipgrepIgnore(){}},getParentProcessInfo:()=>null,MULTI_ROOT_ABSOLUTE_PATH:""}';
+
+function apply(label, next) {
+  fs.writeFileSync(p, next);
+  console.log("Patched Merkle throw -> stub (" + label + ")");
+  process.exit(0);
+}
+
 const exactFrom =
   "Original error: ${c&&c.stack?c.stack:c}`;throw new Error(n)}e.exports=u,e.exports.MerkleClient=u.MerkleClient";
-const exactTo =
-  "Original error: ${c&&c.stack?c.stack:c}`;u=" +
-  stub +
-  "}e.exports=u,e.exports.MerkleClient=u.MerkleClient";
 if (src.includes(exactFrom)) {
-  src = src.replace(exactFrom, exactTo);
-  fs.writeFileSync(p, src);
-  console.log("Patched Merkle throw -> stub (exact match)");
-  process.exit(0);
+  apply(
+    "exact match",
+    src.replace(
+      exactFrom,
+      "Original error: ${c&&c.stack?c.stack:c}`;u=" +
+        stub +
+        "}e.exports=u,e.exports.MerkleClient=u.MerkleClient"
+    )
+  );
 }
-const re = /if\(!\w\)\{let \w="Failed to load native binding for ".+?throw new Error\(\w\)\}/s;
-if (re.test(src)) {
-  src = src.replace(re, "if(!c){c=" + stub + ";}");
-  fs.writeFileSync(p, src);
-  console.log("Patched Merkle throw -> stub (regex fallback)");
-  process.exit(0);
+
+// Nearest `if(!VAR){...throw new Error(X)}` before the native-binding throw.
+// Agent 2026.10+ uses `if(!u){const t={platform map},e=...,r=\`Failed to load...\`;throw new Error(r)}`.
+const marker = "Failed to load native binding for";
+const mi = src.indexOf(marker);
+if (mi >= 0) {
+  const head = src.lastIndexOf("if(!", mi);
+  if (head >= 0 && mi - head <= 4000) {
+    const vm = src.slice(head, head + 24).match(/^if\(!(\w)\)\{/);
+    const tm = vm ? src.slice(head).match(/throw new Error\(\w\)\}/) : null;
+    if (vm && tm) {
+      const end = head + tm.index + tm[0].length;
+      apply(
+        "near-marker " + vm[1],
+        src.slice(0, head) + "if(!" + vm[1] + "){" + vm[1] + "=" + stub + "}" + src.slice(end)
+      );
+    }
+  }
 }
+
 console.error("Could not locate Merkle failure path");
 process.exit(2);
 NODE
@@ -358,7 +437,9 @@ fi
 export CURSOR_AGENT_VERSION_DIR="\${VERSION_DIR}"
 export NODE_PATH="\${VERSION_DIR}/node_modules\${NODE_PATH:+:\${NODE_PATH}}"
 # Agent process only — never export this from bashrc (breaks Termux-X11).
-export LD_LIBRARY_PATH="\${PREFIX}/lib:\${LD_LIBRARY_PATH:-}"
+# GNU-named stubs live under cursor-agent/lib, not \$PREFIX/lib (that path
+# is on the default Bionic search and would break Termux node/npm/pnpm).
+export LD_LIBRARY_PATH="\${HOME}/.local/share/cursor-agent/lib:\${PREFIX}/lib:\${LD_LIBRARY_PATH:-}"
 PRELOAD="\${HOME}/.local/share/cursor-agent/termux-preload.js"
 [[ -f "\${PRELOAD}" ]] || {
   echo "cursor-agent: missing termux-preload.js; re-run bruk-cursor-termux" >&2
@@ -412,7 +493,9 @@ apply_patches() {
   fi
   VERSION_DIR="$vdir"
   step "Patching $VERSION_DIR"
+  fix_tls_and_libs
   write_preload "$PRELOAD_DST"
+  patch_merkle_stub
   write_tree_sitter_stubs "$VERSION_DIR"
   sync_npm_preload
   # Always refresh launcher + bashrc so LD_LIBRARY_PATH never leaks globally.
@@ -422,7 +505,8 @@ apply_patches() {
 
 main() {
   require_termux
-  mkdir -p "$BIN_DIR" "$INSTALL_ROOT" "$HOME/tmp"
+  mkdir -p "$BIN_DIR" "$INSTALL_ROOT" "$SHIM_DIR" "$HOME/tmp"
+  ensure_node_ok
 
   if [[ "$PATCH_ONLY" -eq 1 ]]; then
     apply_patches
@@ -432,16 +516,13 @@ main() {
   fi
 
   [[ "$NO_DEPS" -eq 1 ]] || install_deps
+  ensure_node_ok
   cleanup_previous
   detect_version
   download_package
   swap_binaries
-  fix_tls_and_libs
   rebuild_sqlite
-  patch_merkle_stub
-  install_preload_and_launcher
-  write_tree_sitter_stubs "$VERSION_DIR"
-  sync_npm_preload
+  apply_patches
   smoke_test
 
   cat <<MSG

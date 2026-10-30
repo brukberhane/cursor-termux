@@ -7,7 +7,7 @@ bruk-cursor-termux installed.
   bruk-cursor-termux          # fresh Cursor Agent + Termux patches
   bct --patch-only            # after cursor-agent update
 
-Need clang/make/python/nodejs-lts first:
-  pkg install nodejs-lts clang make python git curl ripgrep
+Need clang/make/python/nodejs-lts/libc++ first:
+  pkg install libc++ nodejs-lts clang make python git curl ripgrep
 `);
 }

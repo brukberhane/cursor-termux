@@ -10,7 +10,7 @@ Inspired by [cursor-termux](https://github.com/Afnanksalal/cursor-termux) (MIT).
 |--------|------------|
 | Bundled `node` / `rg` are glibc ELFs | Symlink Termux `node` and `rg` |
 | Termux looks like musl → fake file-service musl module | Preload spoofs glibc + stubs file-service |
-| `node_sqlite3` glibc addon | Rebuild sqlite3 for Bionic when possible |
+| `node_sqlite3` glibc addon | Preload stubs `dlopen`; rebuild sqlite3 for Bionic when possible |
 | Merkle native `.node` crash | Patch failure path + `dlopen` stub |
 | Agent `2026.08.25+` `require("tree-sitter")` | JS Parser stubs (`tree-sitter`, `tree-sitter-bash`) |
 | Global `LD_LIBRARY_PATH` in `~/.bashrc` | **Not set.** Launcher-only so Termux-X11 is untouched |
@@ -19,12 +19,19 @@ Inspired by [cursor-termux](https://github.com/Afnanksalal/cursor-termux) (MIT).
 
 ```bash
 pkg update
-pkg install nodejs-lts clang make python git curl ripgrep pkg-config binutils
+pkg install libc++ nodejs-lts clang make python git curl ripgrep pkg-config binutils
 npm install -g bruk-cursor-termux
 bruk-cursor-termux
 hash -r
 source ~/.bashrc
 NO_OPEN_BROWSER=1 cursor-agent login
+```
+
+If `node`/`npm`/`pnpm` die with `cannot locate symbol "_ZNSt6__ndk113__hash_memoryEPKvm"`, libc++ is behind node (NDK r29 vs r30):
+
+```bash
+pkg install libc++
+pkg reinstall nodejs-lts
 ```
 
 From this repo without npm publish:
@@ -59,12 +66,12 @@ bct --patch-only
 ## What install does
 
 1. Termux + ARM64 check  
-2. `pkg install` build/runtime deps  
-3. Cleanup old `~/.local/share/cursor-agent` (unlink `node`/`rg` first so Termux node is not deleted)  
+2. `pkg install` build/runtime deps (`libc++` before `nodejs-lts`)  
+3. Cleanup old `~/.local/share/cursor-agent` (unlink `node`/`rg` first so Termux node is not deleted)   
 4. Parse version from `https://cursor.com/install`  
 5. Download `android/arm64` tarball if present, else `linux/arm64`  
 6. Symlink Termux `node` + `rg`  
-7. TLS certs + empty glibc-named `.so` stubs under `$PREFIX/lib` (not via bashrc)  
+7. TLS certs + empty glibc-named `.so` stubs under `~/.local/share/cursor-agent/lib` (launcher `LD_LIBRARY_PATH` only; never `$PREFIX/lib`)  
 8. sqlite3 node-gyp rebuild (best-effort)  
 9. Merkle `index.js` patch  
 10. Copy `lib/termux-preload.js`, write `~/.local/bin/cursor-agent`, PATH-only bashrc block  
@@ -76,6 +83,7 @@ bct --patch-only
 ```
 ~/.local/bin/cursor-agent
 ~/.local/share/cursor-agent/termux-preload.js
+~/.local/share/cursor-agent/lib/          # GNU .so stubs (launcher LD_LIBRARY_PATH)
 ~/.local/share/cursor-agent/versions/<YYYY.MM.DD-sha>/
 ```
 
@@ -84,7 +92,7 @@ bct --patch-only
 | Variable | Where | Why |
 |----------|--------|-----|
 | `PATH` (`~/.local/bin`) | `~/.bashrc` marker | `cursor-agent` on PATH |
-| `LD_LIBRARY_PATH=$PREFIX/lib` | **launcher only** | agent / leftover .so |
+| `LD_LIBRARY_PATH=$HOME/.local/share/cursor-agent/lib:$PREFIX/lib` | **launcher only** | GNU stubs + agent .so |
 | `CURSOR_AGENT_VERSION_DIR` | launcher | preload finds the tree |
 | `NODE_OPTIONS=--require=preload` | launcher | workers inherit shims |
 
